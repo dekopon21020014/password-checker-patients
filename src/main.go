@@ -21,6 +21,7 @@ var (
 	layout        *tview.Flex
 	password      string
 	currentDir    string
+	selectedDB    string
 	patientsTable *table.PatientsTable
 
 	// 各種UI
@@ -51,10 +52,9 @@ func main() {
 
 // ** ログ設定 **
 func setupLogger() {
-	// 保存フォルダが存在しない場合は作成
 	logFileDir := os.Getenv("LOG_FILE_DIR")
 	if _, err := os.Stat(logFileDir); os.IsNotExist(err) {
-		err := os.MkdirAll(logFileDir, 0755) // フォルダ作成
+		err := os.MkdirAll(logFileDir, 0755)
 		if err != nil {
 			log.Fatalf("保存フォルダの作成に失敗: %v", err)
 		}
@@ -74,20 +74,26 @@ func setupLogger() {
 // ** TUIの初期化 **
 func initializeTUI() {
 	app = tview.NewApplication()
-	// currentDir, _ = os.Getwd()
 	currentDir = os.Getenv("CURRENT_DIR")
 
 	// 各画面を作成
+	sqliteList = createSqliteList()
 	passwordForm = createPasswordForm()
-	sqliteList = createSqlitelList()
 	logView = createLogView()
 
-	// **最初はパスワード画面を表示**
+	// **最初はsqliteリストを表示**
 	layout = tview.NewFlex().
-		AddItem(passwordForm, 0, 1, true).
-		AddItem(sqliteList, 0, 1, false)
+		AddItem(sqliteList, 0, 1, true).
+		AddItem(passwordForm, 0, 1, false)
 
 	app.SetRoot(layout, true)
+	updateSqliteList()
+}
+
+func createSqliteList() *tview.List {
+	list := tview.NewList().ShowSecondaryText(false)
+	list.SetBorder(true).SetTitle("1. データベースファイル(.sqlite)を選択")
+	return list
 }
 
 // ** パスワード入力フォーム **
@@ -96,22 +102,19 @@ func createPasswordForm() *tview.Form {
 		AddPasswordField("パスワード:", "", 20, '*', func(text string) {
 			password = text
 		}).
-		AddButton("次へ", func() {
-			updateSqliteList()
+		AddButton("実行", func() {
+			executePasswordCheck()
+		}).
+		AddButton("戻る", func() {
+			app.SetFocus(sqliteList)
 		}).
 		AddButton("終了", func() {
 			app.Stop()
 			os.Exit(0)
 		})
 
-	form.SetBorder(true).SetTitle("1. パスワード入力")
+	form.SetBorder(true).SetTitle("2. パスワード入力")
 	return form
-}
-
-func createSqlitelList() *tview.List {
-	list := tview.NewList().ShowSecondaryText(false)
-	list.SetBorder(true).SetTitle("2. データベースファイル(.sqlite)を選択")
-	return list
 }
 
 // ** ログ画面 **
@@ -123,7 +126,7 @@ func createLogView() *tview.TextView {
 
 // ** sqlite選択リストを更新 **
 func updateSqliteList() {
-	go func() { // 非同期で処理
+	go func() {
 		sqliteList.Clear()
 
 		entries, err := os.ReadDir(currentDir)
@@ -141,32 +144,40 @@ func updateSqliteList() {
 				})
 			} else if strings.HasSuffix(strings.ToLower(entry.Name()), ".sqlite") {
 				sqliteList.AddItem(entry.Name(), "", 0, func() {
-					patientsTable = table.GetDatabase(filepath.Join(currentDir, entry.Name()))
-					defer patientsTable.DB.Close()
-					result, err := patientsTable.CheckPassword(password)
-					var msg string
-					if err != nil {
-						log.Println("Error in CheckPassword: ", err)
-						msg = fmt.Sprintf("Error in CheckPassword: %v", err)
-					} else {
-						msg = createResultMessage(result)
-					}
-					showCompletionMenu(msg)
+					selectedDB = filepath.Join(currentDir, entry.Name())
+					app.SetFocus(passwordForm)
 				})
 			}
 		}
 
-		// 親ディレクトリ (..) を追加
 		parentDir := filepath.Dir(currentDir)
 		sqliteList.AddItem("[DIR] 前のフォルダに戻る", "", 0, func() {
 			currentDir = parentDir
 			updateSqliteList()
 		})
+		sqliteList.AddItem("[X] 終了する", "", 0, func() {
+			app.Stop()
+			os.Exit(0)
+		})
 
-		// **[追加] 画面を更新 & フォーカス移動**
 		app.SetFocus(sqliteList)
 		app.Draw()
 	}()
+}
+
+// ** SQLiteファイル選択後にパスワード認証を実行 **
+func executePasswordCheck() {
+	patientsTable = table.GetDatabase(selectedDB)
+	defer patientsTable.DB.Close()
+	result, err := patientsTable.CheckPassword(password)
+	var msg string
+	if err != nil {
+		log.Println("Error in CheckPassword: ", err)
+		msg = fmt.Sprintf("Error in CheckPassword: %v", err)
+	} else {
+		msg = createResultMessage(result)
+	}
+	showCompletionMenu(msg)
 }
 
 func createResultMessage(result map[string]map[string]int) string {
